@@ -1,8 +1,12 @@
 # app/config.py
 from pathlib import Path
+import os
+# Get the absolute path to the project root (one level up from Backend)
+PROJECT_ROOT = Path(__file__).parent.parent
+MODEL_PATH = PROJECT_ROOT / "Model" / "xg_energy_model.pkl"
 
-# Model path (relative to the directory from which the server is started)
-MODEL_PATH = Path("../Model/xg_energy_model.pkl")
+# Alternative: Use environment variable (for Render deployment)
+# MODEL_PATH = Path(os.getenv("MODEL_PATH", str(PROJECT_ROOT / "Model" / "xg_energy_model.pkl")))
 
 # Feature list (order must match training)
 FEATURES = [
