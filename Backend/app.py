@@ -14,6 +14,7 @@ import numpy as np
 from datetime import datetime
 import json
 from pathlib import Path
+import os
 
 # =========================================================
 # FASTAPI APP INITIALIZATION
@@ -38,7 +39,7 @@ app.add_middleware(
 # GLOBAL VARIABLES & MODEL LOADING
 # =========================================================
 
-MODEL_PATH = Path(r"D:\energy_project\Model\energy_model.pkl")
+MODEL_PATH = Path("../Model/xg_energy_model.pkl")
 FEATURES = [
     'Temperature', 'Humidity', 'SquareFootage', 'Occupancy',
     'HVACUsage', 'LightingUsage', 'DayOfWeek', 'Holiday',
@@ -229,14 +230,22 @@ async def load_model():
     """Load the trained model on startup."""
     global MODEL
     try:
-        MODEL = joblib.load(MODEL_PATH)
-        print(f"Model loaded successfully from {MODEL_PATH}")
+        if MODEL_PATH.exists():
+            MODEL = joblib.load(MODEL_PATH)
+            print(f"✅ Model loaded successfully from {MODEL_PATH}")
+            print(f"✅ Model expects {MODEL.n_features_in_} features")
+            
+            # Test the model
+            test_input = pd.DataFrame([[28, 55, 750, 4, 1, 1, 2, 0, 14, 15, 6, 0, 1]], 
+                                       columns=FEATURES)
+            test_pred = MODEL.predict(test_input)[0]
+            print(f"✅ Test prediction successful: {test_pred:.2f} kWh")
+        else:
+            print(f"❌ Model file not found at {MODEL_PATH}")
+            print(f"   Current working directory: {os.getcwd()}")
+            print("   Please check the path and run train_model.py first")
     except Exception as e:
-        print(f"Could not load model from {MODEL_PATH}")
-        print(f"Error: {str(e)}")
-        print("API will return mock predictions until model is loaded.")
-
-
+        print(f"❌ Error loading model: {str(e)}")
 # =========================================================
 # PREDICTION UTILITIES
 # =========================================================
@@ -289,7 +298,18 @@ def prepare_model_input(technical_params: Dict) -> pd.DataFrame:
     # Calculate derived features
     weekend_label = get_weekend_label(technical_params["day_of_week"])
     time_period_label = get_time_period(technical_params["hour"])
-    
+
+    # IMPORTANT: Use the EXACT order your model expects
+    # Get order from model if loaded, otherwise use default order
+    if MODEL is not None:
+        expected_features = MODEL.feature_names_in_
+    else:
+        # Default order (matches training)
+        expected_features = [
+            'Temperature', 'Humidity', 'SquareFootage', 'Occupancy',
+            'HVACUsage', 'LightingUsage', 'DayOfWeek', 'Holiday',
+            'Hour', 'Day', 'Month', 'WeekendLabel', 'TimePeriodLabel'
+        ] 
     # Create feature dictionary matching model's expected order
     features_dict = {
         'Temperature': technical_params["temperature"],
@@ -348,7 +368,7 @@ def make_prediction(technical_params: Dict) -> PredictionResponse:
     else:
         raw_prediction = float(MODEL.predict(model_input)[0])
         # Scale down the model output to realistic values
-        hourly_consumption = raw_prediction / 25
+        hourly_consumption = raw_prediction 
         hourly_consumption = max(0.5, min(hourly_consumption, 15))
     
     # Calculate daily and monthly estimates
@@ -452,7 +472,6 @@ async def predict_daily_forecast(request: DailyForecastRequest):
         hourly_predictions = []
         
         for hour in range(24):
-            # Create input for this hour
             user_input = UserFriendlyInput(
                 property_type=request.property_type,
                 property_size=request.property_size,
@@ -467,11 +486,9 @@ async def predict_daily_forecast(request: DailyForecastRequest):
                 month=request.month
             )
             
-            # Convert and predict
             technical_params = map_user_friendly_to_technical(user_input)
             prediction = make_prediction(technical_params)
             
-            # Now prediction has hourly_consumption_kwh and hourly_cost_inr (FIXED)
             hourly_predictions.append({
                 "hour": hour,
                 "consumption_kwh": prediction.hourly_consumption_kwh,
@@ -479,22 +496,33 @@ async def predict_daily_forecast(request: DailyForecastRequest):
                 "time_period": prediction.time_period
             })
         
-        # Calculate daily totals
         total_consumption = sum(p["consumption_kwh"] for p in hourly_predictions)
         total_cost = sum(p["cost_inr"] for p in hourly_predictions)
+        
+        peak_hour = max(hourly_predictions, key=lambda x: x["consumption_kwh"])
+        off_peak_hour = min(hourly_predictions, key=lambda x: x["consumption_kwh"])
         
         return {
             "date": f"{request.month:02d}/{request.day:02d}",
             "hourly_forecast": hourly_predictions,
             "daily_total_kwh": round(total_consumption, 2),
             "daily_total_cost_inr": round(total_cost, 2),
-            "property_type": request.property_type
+            "property_type": request.property_type,
+            "peak_consumption": {
+                "hour": peak_hour["hour"],
+                "consumption_kwh": peak_hour["consumption_kwh"],
+                "cost_inr": peak_hour["cost_inr"]
+            },
+            "off_peak_consumption": {
+                "hour": off_peak_hour["hour"],
+                "consumption_kwh": off_peak_hour["consumption_kwh"],
+                "cost_inr": off_peak_hour["cost_inr"]
+            }
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Daily forecast failed: {str(e)}")
-
-
+    
 @app.post("/compare")
 async def compare_scenarios(
     scenario_1: UserFriendlyInput,
